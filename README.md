@@ -1,5 +1,9 @@
 # ow my eyes
-ow my eyes.
+My first foray into GPU programming.
+
+![ow my eyes](ow.png)
+
+
 ## Story
 I got [this very great video](https://www.youtube.com/watch?v=TvZI6Xc0J1Y) in my youtube recommendations, and decided to re-implement it in Rust with a 1920x1080 grid. It ran entirely on the cpu with multithreading. Needless to say, it maxed my CPU to death. Sent it to a friend with a 24 core i9-13980HX, maxed his CPU too. Only way I could get it running at 60fps was to run at half resolution and scale up. Knowing this wasn't the way, I decided to learn wgpu and rewrite the code to mostly run on the GPU, which is what this is.
 
