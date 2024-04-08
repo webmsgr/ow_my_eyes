@@ -1,3 +1,4 @@
+use anyhow::Context;
 use rand::seq::SliceRandom;
 use std::{num::NonZeroU64, process::Child, sync::Arc};
 use strum::VariantArray;
@@ -88,7 +89,7 @@ impl PixelState {
 
 const FPS: usize = 60;
 
-pub async fn run() {
+pub async fn run() -> anyhow::Result<()> {
     render_to_window().await
 }
 
@@ -97,33 +98,31 @@ struct WinitGame<'a> {
     surface: wgpu::Surface<'a>,
 }
 
-async fn render_to_window() {
-    let game = Game::new(false).await;
+async fn render_to_window() -> anyhow::Result<()> {
+    let game = Game::new(false).await?;
 
-    let event_loop = winit::event_loop::EventLoop::new().unwrap();
+    let event_loop = winit::event_loop::EventLoop::new().context("Failed to create event loop")?;
     let window = winit::window::WindowBuilder::new()
         .with_title("ow my eyes")
         .with_inner_size(winit::dpi::PhysicalSize::new(WIDTH, HEIGHT))
         .with_fullscreen(Some(Fullscreen::Borderless(None)))
         .with_resizable(false)
         .build(&event_loop)
-        .unwrap();
+        .context("Failed to create window")?;
     let window = Arc::new(window);
     // SAFETY: We are using the raw handle to create the surface
     // this handle lives for the lifetime of the window
     // the window will outlive the surface
+    // because we put it in an arc and drop it after the game loop terminates (which drops the surface)
     let surface = unsafe {
         game.instance
             .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: window.display_handle().unwrap().as_raw(),
-                raw_window_handle: window.window_handle().unwrap().as_raw(),
+                raw_display_handle: window.display_handle().context("No display handle!")?.as_raw(),
+                raw_window_handle: window.window_handle().context("No window handle!")?.as_raw(),
             })
-            .unwrap()
+            .context("Failed to create surface!")?
     };
     // let surface_caps = surface.get_capabilities(&game.adapter);
-    // Shader code in this tutorial assumes an sRGB surface texture. Using a different
-    // one will result in all the colors coming out darker. If you want to support non
-    // sRGB surfaces, you'll need to account for that when drawing to the frame.
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: wgpu::TextureFormat::Bgra8UnormSrgb,
@@ -197,13 +196,14 @@ async fn render_to_window() {
             }
         },
     )
-    .unwrap();
+    .context("Game loop failed")?;
     info!("Window closed");
     drop(window); // winit game should be dropped by this point i hope
+    Ok(())
 }
 #[allow(dead_code)]
-async fn render_to_file() {
-    let mut game = Game::new(true).await;
+async fn render_to_file() -> anyhow::Result<()> {
+    let mut game = Game::new(true).await?;
     const RENDER_TIME: usize = 60; // in seconds
     const FRAMES: usize = FPS * RENDER_TIME;
     info!(
@@ -221,7 +221,8 @@ async fn render_to_file() {
     info!(
         "Render Compelete in {}, god save us all",
         humantime::format_duration(elapsed)
-    )
+    );
+    Ok(())
 }
 
 struct Game {
@@ -253,7 +254,7 @@ impl Drop for Game {
 
 impl Game {
     #[instrument]
-    async fn new(enable_ffmpeg: bool) -> Self {
+    async fn new(enable_ffmpeg: bool) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
@@ -265,12 +266,12 @@ impl Game {
                 force_fallback_adapter: false,
             })
             .await
-            .unwrap();
+            .context("No adapter found!")?;
         info!("Adapter: {:?}", adapter.get_info());
         let (device, queue) = adapter
             .request_device(&Default::default(), None)
             .await
-            .unwrap();
+            .context("No device found!")?;
         info!("Creating output texture");
         let texture_desc = wgpu::TextureDescriptor {
             size: wgpu::Extent3d {
@@ -464,13 +465,13 @@ impl Game {
                     .stdin(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::null())
                     .spawn()
-                    .unwrap(),
+                    .context("Failed to start ffmpeg")?,
             )
         } else {
             None
         };
 
-        Self {
+        Ok(Self {
             instance,
             device,
             queue,
@@ -485,7 +486,7 @@ impl Game {
             data_buffer_copy,
             compute_bind_group_layout,
             render_bind_group_layout,
-        }
+        })
     }
     fn tick(&mut self) {
         let mut encoder = self

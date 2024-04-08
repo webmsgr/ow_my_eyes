@@ -27,3 +27,6 @@ Depending on the mode, we do two different things with the texture
 We copy the texture to the screen, pretty simple.
 #### FFmpeg mode (requires changing the code)
 In this mode, we create a instance of ffmpeg at the start of the program, copy the output texture to a buffer after every render, then write that buffer to ffmpeg to create a video. The code is hardcoded to use AMF hardware acceleration for hevc video, but that should be pretty easy to change.
+
+## Thanks
+* [This wgpu tutorial](https://sotrh.github.io/learn-wgpu/) was a great help in getting started with wgpu. (A lot of copy paste for the boilerplate)
