@@ -1,18 +1,26 @@
-use rand::{seq::SliceRandom, Rng};
-use strum::VariantArray;
+use rand::seq::SliceRandom;
 use std::{num::NonZeroU64, process::Child, sync::Arc};
+use strum::VariantArray;
 const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
 use game_loop::game_loop;
 use indicatif::{ProgressIterator, ProgressStyle};
 use tracing::{info, instrument};
-use wgpu::{include_wgsl, rwh::{HasDisplayHandle, HasRawWindowHandle, HasWindowHandle}, util::DeviceExt, Origin3d};
-use winit::window::{self, Fullscreen};
+use wgpu::{
+    include_wgsl,
+    rwh::{HasDisplayHandle, HasWindowHandle},
+    util::DeviceExt,
+    Origin3d,
+};
+use winit::{
+    event::{Event, WindowEvent},
+    window::Fullscreen,
+};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, VariantArray)]
 pub enum PixelState {
     Rock,
     Paper,
-    Scissors
+    Scissors,
 }
 
 impl PixelState {
@@ -20,10 +28,10 @@ impl PixelState {
     #[inline]
     pub fn color(&self) -> [u8; 4] {
         match self {
-            PixelState::Rock =>     [0xff, 0x00, 0x00, 255],
-            PixelState::Paper =>    [0x00, 0xff, 0x00, 255],
+            PixelState::Rock => [0xff, 0x00, 0x00, 255],
+            PixelState::Paper => [0x00, 0xff, 0x00, 255],
             PixelState::Scissors => [0x00, 0x00, 0xff, 255],
-           // PixelState::Gun =>      [0xff, 0xff, 0xf, 255],
+            // PixelState::Gun =>      [0xff, 0xff, 0xf, 255],
         }
     }
     pub fn index(&self) -> u8 {
@@ -44,7 +52,9 @@ impl PixelState {
     }
     #[inline]
     pub fn rand() -> Self {
-        *PixelState::VARIANTS.choose(&mut rand::thread_rng()).expect("has variants")
+        *PixelState::VARIANTS
+            .choose(&mut rand::thread_rng())
+            .expect("has variants")
     }
     pub fn interaction(self, neighbors: &[Option<Self>]) -> Self {
         // Count the number of each type of neighbor
@@ -59,16 +69,16 @@ impl PixelState {
         }
         // check if we are beaten (and if the beater is > 2)
         let our_foe_count = match self {
-            PixelState::Rock => counts[1], // paper beats rock
+            PixelState::Rock => counts[1],  // paper beats rock
             PixelState::Paper => counts[2], // gun beats paper
-            PixelState::Scissors => counts[0],  // rock beats scissors
-            //PixelState::Gun => counts[2], // scissors beat gun
+            PixelState::Scissors => counts[0], // rock beats scissors
+                                             //PixelState::Gun => counts[2], // scissors beat gun
         };
         if our_foe_count > 2 {
             match self {
                 PixelState::Paper => PixelState::Scissors, // paper becomes scissors
-                PixelState::Rock => PixelState::Paper, // rock becomes paper
-                PixelState::Scissors => PixelState::Rock, // scissors becomes rock
+                PixelState::Rock => PixelState::Paper,     // rock becomes paper
+                PixelState::Scissors => PixelState::Rock,  // scissors becomes rock
             }
         } else {
             self
@@ -84,11 +94,11 @@ pub async fn run() {
 
 struct WinitGame<'a> {
     game: Game,
-    surface: wgpu::Surface<'a>
+    surface: wgpu::Surface<'a>,
 }
 
 async fn render_to_window() {
-    let mut game = Game::new(false).await;
+    let game = Game::new(false).await;
 
     let event_loop = winit::event_loop::EventLoop::new().unwrap();
     let window = winit::window::WindowBuilder::new()
@@ -102,88 +112,99 @@ async fn render_to_window() {
     // SAFETY: We are using the raw handle to create the surface
     // this handle lives for the lifetime of the window
     // the window will outlive the surface
-    let surface = unsafe { game.instance.create_surface_unsafe(
-        wgpu::SurfaceTargetUnsafe::RawHandle { 
-            raw_display_handle: window.display_handle().unwrap().as_raw(), 
-            raw_window_handle: window.window_handle().unwrap().as_raw() }
-        ).unwrap()
+    let surface = unsafe {
+        game.instance
+            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                raw_display_handle: window.display_handle().unwrap().as_raw(),
+                raw_window_handle: window.window_handle().unwrap().as_raw(),
+            })
+            .unwrap()
     };
-    ///let surface_caps = surface.get_capabilities(&game.adapter);
+    // let surface_caps = surface.get_capabilities(&game.adapter);
     // Shader code in this tutorial assumes an sRGB surface texture. Using a different
     // one will result in all the colors coming out darker. If you want to support non
     // sRGB surfaces, you'll need to account for that when drawing to the frame.
-    let config = wgpu::SurfaceConfiguration { 
-        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT, 
-        format: wgpu::TextureFormat::Bgra8UnormSrgb, 
+    let config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: wgpu::TextureFormat::Bgra8UnormSrgb,
         width: WIDTH,
-        height: HEIGHT, 
-        present_mode: wgpu::PresentMode::AutoVsync, 
-        desired_maximum_frame_latency: 2, 
-        alpha_mode: wgpu::CompositeAlphaMode::Auto, 
-        view_formats: vec![]
+        height: HEIGHT,
+        present_mode: wgpu::PresentMode::AutoVsync,
+        desired_maximum_frame_latency: 2,
+        alpha_mode: wgpu::CompositeAlphaMode::Auto,
+        view_formats: vec![],
     };
     surface.configure(&game.device, &config);
 
-    let mut winit_game = WinitGame {
-        game,
-        surface
-    };
+    let winit_game = WinitGame { game, surface };
 
-    game_loop(event_loop, Arc::clone(&window), winit_game, 60, 0.1, |u| {
-        u.game.game.tick();
-    }, |r| {
-        r.game.game.render(0);
-        // gotta copy the texture to the surface
-        let mut command_encoder = r.game.game.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Copy Texture to Surface"),
-        });
-        if r.window_occluded {
-            return;
-        }
-        let st = r.game.surface.get_current_texture().unwrap();
-        command_encoder.copy_texture_to_texture(
-            wgpu::ImageCopyTexture {
-                texture: &r.game.game.texture,
-                mip_level: 0,
-                origin: Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::ImageCopyTexture {
-                texture: &st.texture,
-                mip_level: 0,
-                origin: Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-                width: WIDTH,
-                height: HEIGHT,
-                depth_or_array_layers: 1,
-            },
-        );
-        let id = r.game.game.queue.submit(Some(command_encoder.finish()));
-        r.game.game.device.poll(wgpu::Maintain::WaitForSubmissionIndex(id));
-        st.present();
-    }, |h, e| {
-        match e {
-            winit::event::Event::WindowEvent { event, .. } => {
-                match event {
-                    winit::event::WindowEvent::CloseRequested => {
-                        h.exit();
-                    }
-                    _ => {}
-                }
+    game_loop(
+        event_loop,
+        Arc::clone(&window),
+        winit_game,
+        60,
+        0.1,
+        |u| {
+            u.game.game.tick();
+        },
+        |r| {
+            r.game.game.render(0);
+            // gotta copy the texture to the surface
+            let mut command_encoder =
+                r.game
+                    .game
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Copy Texture to Surface"),
+                    });
+            if r.window_occluded {
+                return;
             }
-            _ => {}
-        }
-    }).unwrap();
+            let st = r.game.surface.get_current_texture().unwrap();
+            command_encoder.copy_texture_to_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &r.game.game.texture,
+                    mip_level: 0,
+                    origin: Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::ImageCopyTexture {
+                    texture: &st.texture,
+                    mip_level: 0,
+                    origin: Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: WIDTH,
+                    height: HEIGHT,
+                    depth_or_array_layers: 1,
+                },
+            );
+            let id = r.game.game.queue.submit(Some(command_encoder.finish()));
+            r.game
+                .game
+                .device
+                .poll(wgpu::Maintain::WaitForSubmissionIndex(id));
+            st.present();
+        },
+        |h, e| {
+            if let Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } = e
+            {
+                h.exit();
+            }
+        },
+    )
+    .unwrap();
     info!("Window closed");
     drop(window); // winit game should be dropped by this point i hope
-    
 }
-
+#[allow(dead_code)]
 async fn render_to_file() {
     let mut game = Game::new(true).await;
-    const RENDER_TIME: usize = 60 * 1; // in seconds
+    const RENDER_TIME: usize = 60; // in seconds
     const FRAMES: usize = FPS * RENDER_TIME;
     info!(
         "Doing {} ({} at {}fps) renders, may god have mercy",
@@ -206,7 +227,7 @@ async fn render_to_file() {
 struct Game {
     instance: wgpu::Instance,
     device: wgpu::Device,
-    adapter: wgpu::Adapter,
+    //adapter: wgpu::Adapter,
     queue: wgpu::Queue,
     texture: wgpu::Texture,
     texture_view: wgpu::TextureView,
@@ -298,7 +319,7 @@ impl Game {
         let data_buffer_desc_copy = wgpu::util::BufferInitDescriptor {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
             label: Some("Data Buffer Copy"),
-            contents: &(0..WIDTH * HEIGHT*std::mem::size_of::<u32>() as u32)
+            contents: &(0..WIDTH * HEIGHT * std::mem::size_of::<u32>() as u32)
                 .map(|_| 0)
                 .collect::<Vec<_>>(),
         };
@@ -306,23 +327,24 @@ impl Game {
         info!("Compiling Shader");
         let shader = device.create_shader_module(include_wgsl!("shader.wgsl"));
         info!("Creating render pipeline");
-        let render_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[
-                // XXX - some graphics cards do not support empty bind layout groups, so
-                // create a dummy entry.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    count: None,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        has_dynamic_offset: false,
-                        min_binding_size: Some(NonZeroU64::new(16).unwrap()),
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+        let render_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    // XXX - some graphics cards do not support empty bind layout groups, so
+                    // create a dummy entry.
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        count: None,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(NonZeroU64::new(16).unwrap()),
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        },
                     },
-                }
-            ],
-        });
+                ],
+            });
 
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -370,39 +392,40 @@ impl Game {
             multiview: None, // 5.
         });
         info!("Creating compute pipeline");
-        let compute_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[
-                // XXX - some graphics cards do not support empty bind layout groups, so
-                // create a dummy entry.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    count: None,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        has_dynamic_offset: false,
-                        min_binding_size: Some(NonZeroU64::new(16).unwrap()),
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+        let compute_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    // XXX - some graphics cards do not support empty bind layout groups, so
+                    // create a dummy entry.
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        count: None,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(NonZeroU64::new(16).unwrap()),
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        },
                     },
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    count: None,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        has_dynamic_offset: false,
-                        min_binding_size: Some(NonZeroU64::new(16).unwrap()),
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        count: None,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(NonZeroU64::new(16).unwrap()),
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        },
                     },
-                },
-            ],
-        });
+                ],
+            });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Compute Pipeline Layout"),
             bind_group_layouts: &[&compute_bind_group_layout],
             push_constant_ranges: &[],
         });
-    
+
         let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Compute Pipeline"),
             layout: Some(&pipeline_layout),
@@ -410,47 +433,48 @@ impl Game {
             entry_point: "compute",
         });
         let ffmpeg = if enable_ffmpeg {
-
-        
-        info!("Creating ffmpeg process");
-        Some(std::process::Command::new("ffmpeg")
-            .args(&[
-                "-y",
-                "-f",
-                "rawvideo",
-                "-vcodec",
-                "rawvideo",
-                "-s",
-                &format!("{}x{}", WIDTH, HEIGHT),
-                "-pix_fmt",
-                "brga",
-                "-r",
-                FPS.to_string().as_str(),
-                "-i",
-                "-",
-                "-c:v",
-                "hevc_amf",
-                "-pix_fmt",
-                "yuv420p",
-                "-an",
-                "-b:v",
-                "10M",
-                "-movflags", "+faststart",
-                "output.mp4",
-            ])
-            .stdin(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap())
+            info!("Creating ffmpeg process");
+            Some(
+                std::process::Command::new("ffmpeg")
+                    .args([
+                        "-y",
+                        "-f",
+                        "rawvideo",
+                        "-vcodec",
+                        "rawvideo",
+                        "-s",
+                        &format!("{}x{}", WIDTH, HEIGHT),
+                        "-pix_fmt",
+                        "brga",
+                        "-r",
+                        FPS.to_string().as_str(),
+                        "-i",
+                        "-",
+                        "-c:v",
+                        "hevc_amf",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-an",
+                        "-b:v",
+                        "10M",
+                        "-movflags",
+                        "+faststart",
+                        "output.mp4",
+                    ])
+                    .stdin(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            )
         } else {
             None
         };
-        
+
         Self {
             instance,
             device,
             queue,
-            adapter,
+            //adapter,
             texture,
             texture_view,
             out_buffer: output_buffer,
@@ -460,55 +484,65 @@ impl Game {
             compute_pipeline,
             data_buffer_copy,
             compute_bind_group_layout,
-            render_bind_group_layout
+            render_bind_group_layout,
         }
     }
     fn tick(&mut self) {
-        let mut encoder = self
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Command Encoder"),
-        });
-        encoder.copy_buffer_to_buffer(&self.data_buffer, 0, &self.data_buffer_copy, 0, (WIDTH * HEIGHT * std::mem::size_of::<u32>() as u32) as wgpu::BufferAddress);
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &self.compute_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: self.data_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: self.data_buffer_copy.as_entire_binding(),
-            }],
-        });
-
-        {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("Compute"), timestamp_writes: None });
-            cpass.set_bind_group(0, &bind_group, &[]);
-            cpass.set_pipeline(&self.compute_pipeline);
-            cpass.dispatch_workgroups(120, 120, 1); // 120x120x1 workgroups with 16x9x1 threads
-        }
-        
-        let ind = self.queue.submit(Some(encoder.finish()));
-        self.device.poll(wgpu::MaintainBase::WaitForSubmissionIndex(ind));
-        
-
-    }
-    fn render(&mut self, frame: usize) {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Command Encoder"),
             });
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &self.render_bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
+        encoder.copy_buffer_to_buffer(
+            &self.data_buffer,
+            0,
+            &self.data_buffer_copy,
+            0,
+            (WIDTH * HEIGHT * std::mem::size_of::<u32>() as u32) as wgpu::BufferAddress,
+        );
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.compute_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
                     binding: 0,
                     resource: self.data_buffer.as_entire_binding(),
-                }]
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.data_buffer_copy.as_entire_binding(),
+                },
+            ],
+        });
+
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Compute"),
+                timestamp_writes: None,
             });
+            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.set_pipeline(&self.compute_pipeline);
+            cpass.dispatch_workgroups(120, 120, 1); // 120x120x1 workgroups with 16x9x1 threads
+        }
+
+        let ind = self.queue.submit(Some(encoder.finish()));
+        self.device
+            .poll(wgpu::MaintainBase::WaitForSubmissionIndex(ind));
+    }
+    fn render(&mut self, _frame: usize) {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Command Encoder"),
+            });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.render_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: self.data_buffer.as_entire_binding(),
+            }],
+        });
         {
             let render_pass_desc = wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -532,7 +566,7 @@ impl Game {
             let mut render_pass = encoder.begin_render_pass(&render_pass_desc);
 
             render_pass.set_pipeline(&self.render_pipeline);
-            
+
             render_pass.set_bind_group(0, &bind_group, &[]);
             render_pass.draw(0..3, 0..1);
         };
@@ -561,33 +595,30 @@ impl Game {
         }
         let id = self.queue.submit(Some(encoder.finish()));
         self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(id));
-        if let Some(ref mut ffmpeg) = self.ffmpeg
-        {
+        if let Some(ref mut ffmpeg) = self.ffmpeg {
             {
-            let buffer_slice = self.out_buffer.slice(..);
+                let buffer_slice = self.out_buffer.slice(..);
 
-            // NOTE: We have to create the mapping THEN device.poll() before await
-            // the future. Otherwise the application will freeze.
-            let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
-            buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-                tx.send(result).unwrap();
-            });
-            self.device.poll(wgpu::Maintain::Wait);
-            smol::block_on(rx.receive()).unwrap().unwrap();
+                // NOTE: We have to create the mapping THEN device.poll() before await
+                // the future. Otherwise the application will freeze.
+                let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+                buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+                    tx.send(result).unwrap();
+                });
+                self.device.poll(wgpu::Maintain::Wait);
+                smol::block_on(rx.receive()).unwrap().unwrap();
 
-            let data = buffer_slice.get_mapped_range();
-            use std::io::Write;
-            ffmpeg
-                .stdin
-                .as_mut()
-                .map(|i| i.write_all(&data).unwrap());
-            //use image::{ImageBuffer, Rgba};
-            //let buffer =
-            //ImageBuffer::<Rgba<u8>, _>::from_raw(WIDTH, HEIGHT, data).unwrap();
-            //buffer.save(format!("out/{}.png", frame)).unwrap();
+                let data = buffer_slice.get_mapped_range();
+                use std::io::Write;
+                if let Some(i) = ffmpeg.stdin.as_mut() {
+                    i.write_all(&data).unwrap()
+                }
+                //use image::{ImageBuffer, Rgba};
+                //let buffer =
+                //ImageBuffer::<Rgba<u8>, _>::from_raw(WIDTH, HEIGHT, data).unwrap();
+                //buffer.save(format!("out/{}.png", frame)).unwrap();
             }
             self.out_buffer.unmap();
         }
-        
     }
 }
