@@ -85,51 +85,18 @@ fn compute(
     // 3 x 4
     // 5 6 7
     // 0
-    if x > 0 {
-        if input[global_invocation_index - 1] == wins_against_us {
-            win_count += u32(1);
-        }
-    }
-    // 1
-    if x > 0 && y > 0 {
-        if input[global_invocation_index - 1920 - 1] == wins_against_us {
-            win_count += u32(1);
-        }
-    }
-    // 2
-    if y > 0 {
-        if input[global_invocation_index - 1920] == wins_against_us {
-            win_count += u32(1);
-        }
-    }
-    // 3
-    if x < 1920 - 1 && y > 0 {
-        if input[global_invocation_index - 1920 + 1] == wins_against_us {
-            win_count += u32(1);
-        }
-    }
-    // 4
-    if x < 1920 - 1 {
-        if input[global_invocation_index + 1] == wins_against_us {
-            win_count += u32(1);
-        }
-    }
-    // 5
-    if x < 1920 - 1 && y < 1080 - 1 {
-        if input[global_invocation_index + 1920 + 1] == wins_against_us {
-            win_count += u32(1);
-        }
-    }
-    // 6
-    if y < 1080 - 1 {
-        if input[global_invocation_index + 1920] == wins_against_us {
-            win_count += u32(1);
-        }
-    }
-    // 7
-    if x > 0 && y < 1080 - 1 {
-        if input[global_invocation_index + 1920 - 1] == wins_against_us {
-            win_count += u32(1);
+    for (var x_o = i32(0); x_o < 3; x_o += 1) {
+        for (var y_o = i32(0); y_o < 3; y_o += 1) {
+            var t_x = i32(x) + x_o - 1;
+            var t_y = i32(y) + y_o - 1;
+            if t_x < 0 || t_x >= 1920 || t_y < 0 || t_y >= 1080 {
+                continue;
+            }
+            let index = t_x + t_y * 1920;
+            let them = input[index];
+            if them == wins_against_us {
+                win_count += u32(1);
+            }
         }
     }
     
