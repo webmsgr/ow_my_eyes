@@ -4,7 +4,7 @@ use std::{num::NonZeroU64, process::Child, sync::Arc};
 use strum::VariantArray;
 const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
-use game_loop::game_loop;
+use game_loop::{game_loop, TimeTrait};
 use indicatif::{ProgressIterator, ProgressStyle};
 use tracing::{info, instrument};
 use wgpu::{
@@ -145,6 +145,13 @@ async fn render_to_window() -> anyhow::Result<()> {
         0.1,
         |u| {
             u.game.game.tick();
+            let between = u.current_instant().sub(&u.previous_instant());
+            // use between to calculate fps
+            if u.number_of_renders() % 60 == 0 {
+                // round to no decimal places
+                let fps = (1.0 / between).round() as u64;
+                info!("FPS: {}", fps);
+            }
         },
         |r| {
             r.game.game.render(0);
