@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use anyhow::Context;
 use rand::Rng;
 use std::{num::NonZeroU64, sync::Arc};
