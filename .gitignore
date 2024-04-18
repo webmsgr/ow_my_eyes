@@ -1,2 +1,8 @@
 /target
 output.mp4
+
+pkg
+dist
+
+.vite
+node_modules

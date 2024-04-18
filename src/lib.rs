@@ -1,107 +1,63 @@
 use anyhow::Context;
-use rand::seq::SliceRandom;
-use std::{num::NonZeroU64, process::Child, sync::Arc};
-use strum::VariantArray;
+use rand::Rng;
+use std::{num::NonZeroU64, sync::Arc};
 const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
 use game_loop::{game_loop, TimeTrait};
-use indicatif::{ProgressIterator, ProgressStyle};
-use tracing::{info, instrument};
+use tracing::{error, info, instrument};
 use wgpu::{
     include_wgsl,
     rwh::{HasDisplayHandle, HasWindowHandle},
     util::DeviceExt,
-    Origin3d,
+    Instance, Surface,
 };
 use winit::{
     event::{Event, WindowEvent},
     window::Fullscreen,
 };
-#[derive(Clone, Copy, Debug, PartialEq, Eq, VariantArray)]
-pub enum PixelState {
-    Rock,
-    Paper,
-    Scissors,
+
+fn create_initial_state() -> Vec<u8> {
+    let mut rng = rand::thread_rng();
+    (0..WIDTH * HEIGHT)
+        .flat_map(|_| rng.gen_range(0..=2u32).to_ne_bytes())
+        .collect()
 }
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
 
-impl PixelState {
-    /// Returns the color of a state in RGBA
-    #[inline]
-    pub fn color(&self) -> [u8; 4] {
-        match self {
-            PixelState::Rock => [0xff, 0x00, 0x00, 255],
-            PixelState::Paper => [0x00, 0xff, 0x00, 255],
-            PixelState::Scissors => [0x00, 0x00, 0xff, 255],
-            // PixelState::Gun =>      [0xff, 0xff, 0xf, 255],
-        }
-    }
-    pub fn index(&self) -> u8 {
-        match self {
-            PixelState::Rock => 0,
-            PixelState::Paper => 1,
-            PixelState::Scissors => 2,
-            //PixelState::Gun => 3,
-        }
-    }
-    pub fn colors() -> [[u8; 4]; 3] {
-        [
-            PixelState::Rock.color(),
-            PixelState::Paper.color(),
-            PixelState::Scissors.color(),
-            //PixelState::Gun.color(),
-        ]
-    }
-    #[inline]
-    pub fn rand() -> Self {
-        *PixelState::VARIANTS
-            .choose(&mut rand::thread_rng())
-            .expect("has variants")
-    }
-    pub fn interaction(self, neighbors: &[Option<Self>]) -> Self {
-        // Count the number of each type of neighbor
-        let mut counts = vec![0; PixelState::VARIANTS.len()];
-        for neighbor in neighbors.iter() {
-            match neighbor {
-                Some(PixelState::Rock) => counts[0] += 1,
-                Some(PixelState::Paper) => counts[1] += 1,
-                Some(PixelState::Scissors) => counts[2] += 1,
-                None => {}
-            }
-        }
-        // check if we are beaten (and if the beater is > 2)
-        let our_foe_count = match self {
-            PixelState::Rock => counts[1],  // paper beats rock
-            PixelState::Paper => counts[2], // gun beats paper
-            PixelState::Scissors => counts[0], // rock beats scissors
-                                             //PixelState::Gun => counts[2], // scissors beat gun
-        };
-        if our_foe_count > 2 {
-            match self {
-                PixelState::Paper => PixelState::Scissors, // paper becomes scissors
-                PixelState::Rock => PixelState::Paper,     // rock becomes paper
-                PixelState::Scissors => PixelState::Rock,  // scissors becomes rock
-            }
-        } else {
-            self
-        }
-    }
-}
+use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, Layer};
+//const FPS: usize = 60;
 
-const FPS: usize = 60;
-
-pub async fn run() -> anyhow::Result<()> {
-    render_to_window().await
-}
-
-struct WinitGame<'a> {
-    game: Game,
-    surface: wgpu::Surface<'a>,
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
+pub async fn run() {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let stupid_amd_filter = filter::filter_fn(|meta| {
+            // see https://github.com/gfx-rs/wgpu/issues/4247
+            // basically, amd does some weird stuff on vulkan that causes error spam
+            // even though it's not really an error
+            meta.target() != "wgpu_hal::auxil::dxgi::exception"
+        });
+        let stupid_amd_layer = tracing_subscriber::fmt::layer();
+        let min_level_filter = tracing_subscriber::filter::LevelFilter::INFO;
+        tracing_subscriber::registry()
+            .with(stupid_amd_layer.with_filter(stupid_amd_filter))
+            .with(min_level_filter)
+            .init();
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        tracing_wasm::set_as_global_default();
+        std::panic::set_hook(Box::new(console_error_panic_hook::hook));
+    }
+    if let Err(e) = render_to_window().await {
+        error!("Error: {:?}", e);
+    }
 }
 
 async fn render_to_window() -> anyhow::Result<()> {
-    let game = Game::new(false).await?;
-
     let event_loop = winit::event_loop::EventLoop::new().context("Failed to create event loop")?;
+    info!("Creating window");
     let window = winit::window::WindowBuilder::new()
         .with_title("ow my eyes")
         .with_inner_size(winit::dpi::PhysicalSize::new(WIDTH, HEIGHT))
@@ -109,42 +65,57 @@ async fn render_to_window() -> anyhow::Result<()> {
         .with_resizable(false)
         .build(&event_loop)
         .context("Failed to create window")?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::WindowExtWebSys;
+        web_sys::window()
+            .and_then(|win| win.document())
+            .and_then(|doc| {
+                let dst = doc.get_element_by_id("wasm")?;
+                let canvas = web_sys::Element::from(window.canvas()?);
+                dst.append_child(&canvas).ok()?;
+                Some(())
+            })
+            .context("Couldn't append canvas to document body.")?;
+    }
+
     let window = Arc::new(window);
-    // SAFETY: We are using the raw handle to create the surface
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all(),
+        ..Default::default()
+    });
+    info!("Creating surface");
+    // SAFETY:
     // this handle lives for the lifetime of the window
     // the window will outlive the surface
     // because we put it in an arc and drop it after the game loop terminates (which drops the surface)
     let surface = unsafe {
-        game.instance
+        instance
             .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: window.display_handle().context("No display handle!")?.as_raw(),
-                raw_window_handle: window.window_handle().context("No window handle!")?.as_raw(),
+                raw_display_handle: window
+                    .display_handle()
+                    .context("No display handle!")?
+                    .as_raw(),
+                raw_window_handle: window
+                    .window_handle()
+                    .context("No window handle!")?
+                    .as_raw(),
             })
             .context("Failed to create surface!")?
     };
     // let surface_caps = surface.get_capabilities(&game.adapter);
-    let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format: wgpu::TextureFormat::Bgra8UnormSrgb,
-        width: WIDTH,
-        height: HEIGHT,
-        present_mode: wgpu::PresentMode::AutoVsync,
-        desired_maximum_frame_latency: 2,
-        alpha_mode: wgpu::CompositeAlphaMode::Auto,
-        view_formats: vec![],
-    };
-    surface.configure(&game.device, &config);
-
-    let winit_game = WinitGame { game, surface };
-
+    info!("Creating game");
+    let game = Game::new(surface, instance).await?;
+    //let winit_game = WinitGame { game, surface };
+    info!("Starting game loop");
     game_loop(
         event_loop,
         Arc::clone(&window),
-        winit_game,
+        game,
         60,
         0.1,
         |u| {
-            u.game.game.tick();
+            u.game.tick();
             let between = u.current_instant().sub(&u.previous_instant());
             // use between to calculate fps
             if u.number_of_renders() % 60 == 0 {
@@ -154,44 +125,15 @@ async fn render_to_window() -> anyhow::Result<()> {
             }
         },
         |r| {
-            r.game.game.render(0);
-            // gotta copy the texture to the surface
-            let mut command_encoder =
-                r.game
-                    .game
-                    .device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("Copy Texture to Surface"),
-                    });
+            #[cfg(not(target_arch = "wasm32"))]
             if r.window_occluded {
+                //info!("Window occluded");
                 return;
             }
-            let st = r.game.surface.get_current_texture().unwrap();
-            command_encoder.copy_texture_to_texture(
-                wgpu::ImageCopyTexture {
-                    texture: &r.game.game.texture,
-                    mip_level: 0,
-                    origin: Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::ImageCopyTexture {
-                    texture: &st.texture,
-                    mip_level: 0,
-                    origin: Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d {
-                    width: WIDTH,
-                    height: HEIGHT,
-                    depth_or_array_layers: 1,
-                },
-            );
-            let id = r.game.game.queue.submit(Some(command_encoder.finish()));
-            r.game
-                .game
-                .device
-                .poll(wgpu::Maintain::WaitForSubmissionIndex(id));
-            st.present();
+            if let Err(e) = r.game.render() {
+                error!("Render failed: {:?}", e);
+                r.exit();
+            }
         },
         |h, e| {
             if let Event::WindowEvent {
@@ -205,121 +147,74 @@ async fn render_to_window() -> anyhow::Result<()> {
     )
     .context("Game loop failed")?;
     info!("Window closed");
-    drop(window); // winit game should be dropped by this point i hope
-    Ok(())
-}
-#[allow(dead_code)]
-async fn render_to_file() -> anyhow::Result<()> {
-    let mut game = Game::new(true).await?;
-    const RENDER_TIME: usize = 60; // in seconds
-    const FRAMES: usize = FPS * RENDER_TIME;
-    info!(
-        "Doing {} ({} at {}fps) renders, may god have mercy",
-        FRAMES,
-        humantime::format_duration(std::time::Duration::from_secs(FRAMES as u64 / FPS as u64)),
-        FPS
-    );
-    let now = std::time::Instant::now();
-    for i in (0..FRAMES).progress_with_style(ProgressStyle::with_template("[{elapsed}/{eta}] {bar:40.cyan/blue} {pos:>7}/{len:7} ({percent}%) {per_sec}tps ({msg})").unwrap()).with_message("Rendering") {
-        game.render(i);
-        game.tick();
-    }
-    let elapsed = now.elapsed();
-    info!(
-        "Render Compelete in {}, god save us all",
-        humantime::format_duration(elapsed)
-    );
+    drop(window); // game should be dropped by this point so its okay to drop the window (the surface is already gone)
     Ok(())
 }
 
 struct Game {
-    instance: wgpu::Instance,
     device: wgpu::Device,
     //adapter: wgpu::Adapter,
     queue: wgpu::Queue,
-    texture: wgpu::Texture,
-    texture_view: wgpu::TextureView,
-    out_buffer: wgpu::Buffer,
+    /*texture: wgpu::Texture,
+    texture_view: wgpu::TextureView,*/
+    //out_buffer: wgpu::Buffer,
     data_buffer: wgpu::Buffer,
     data_buffer_copy: wgpu::Buffer,
     render_pipeline: wgpu::RenderPipeline,
-    ffmpeg: Option<Child>,
     compute_pipeline: wgpu::ComputePipeline,
     compute_bind_group_layout: wgpu::BindGroupLayout,
     render_bind_group_layout: wgpu::BindGroupLayout,
-}
-
-impl Drop for Game {
-    fn drop(&mut self) {
-        if let Some(ref mut ffmpeg) = self.ffmpeg {
-            ffmpeg.stdin.take(); // drop stdin to kill ffmpeg
-            info!("Waiting for ffmpeg to finish");
-            ffmpeg.wait().unwrap();
-        }
-    }
+    surface: wgpu::Surface<'static>,
 }
 
 impl Game {
-    #[instrument]
-    async fn new(enable_ffmpeg: bool) -> anyhow::Result<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
+    #[instrument(skip_all)]
+    async fn new(surface: Surface<'static>, instance: Instance) -> anyhow::Result<Self> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: None,
+                compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
             .await
             .context("No adapter found!")?;
         info!("Adapter: {:?}", adapter.get_info());
         let (device, queue) = adapter
-            .request_device(&Default::default(), None)
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::downlevel_defaults(),
+                    label: None,
+                },
+                None,
+            )
             .await
             .context("No device found!")?;
-        info!("Creating output texture");
-        let texture_desc = wgpu::TextureDescriptor {
-            size: wgpu::Extent3d {
-                width: WIDTH,
-                height: HEIGHT,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bgra8UnormSrgb,
-            usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            label: Some("Output Texture"),
-            view_formats: &[],
+        let surface_caps = surface.get_capabilities(&adapter);
+        let surface_format = surface_caps
+            .formats
+            .iter()
+            .find(|f| f.is_srgb())
+            .unwrap_or(&surface_caps.formats[0])
+            .clone();
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: WIDTH,
+            height: HEIGHT,
+            present_mode: wgpu::PresentMode::AutoVsync,
+            desired_maximum_frame_latency: 2,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![],
         };
-        let texture = device.create_texture(&texture_desc);
-        let texture_view = texture.create_view(&Default::default());
+        surface.configure(&device, &config);
 
-        info!("Creating output buffer");
-
-        let output_buffer_size =
-            (std::mem::size_of::<u32>() as u32 * WIDTH * HEIGHT) as wgpu::BufferAddress;
-        let output_buffer_desc = wgpu::BufferDescriptor {
-            size: output_buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST
-                // this tells wpgu that we want to read this buffer from the cpu
-                | wgpu::BufferUsages::MAP_READ,
-            label: Some("Output Buffer"),
-            mapped_at_creation: false,
-        };
-
-        let output_buffer = device.create_buffer(&output_buffer_desc);
         info!("Creating data buffer");
         //let data_buffer_size = (WIDTH * HEIGHT) as wgpu::BufferAddress;
         let data_buffer_desc = wgpu::util::BufferInitDescriptor {
             usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE,
             label: Some("Data Buffer"),
-            contents: &(0..WIDTH * HEIGHT)
-                .enumerate()
-                .flat_map(|(_, _)| (PixelState::rand() as u32).to_ne_bytes())
-                .collect::<Vec<_>>(),
+            contents: &create_initial_state(),
         };
         let data_buffer = device.create_buffer_init(&data_buffer_desc);
         // create data buffer copy
@@ -374,7 +269,7 @@ impl Game {
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
                     // 4.
-                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    format: surface_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -440,59 +335,17 @@ impl Game {
             module: &shader,
             entry_point: "compute",
         });
-        let ffmpeg = if enable_ffmpeg {
-            info!("Creating ffmpeg process");
-            Some(
-                std::process::Command::new("ffmpeg")
-                    .args([
-                        "-y",
-                        "-f",
-                        "rawvideo",
-                        "-vcodec",
-                        "rawvideo",
-                        "-s",
-                        &format!("{}x{}", WIDTH, HEIGHT),
-                        "-pix_fmt",
-                        "brga",
-                        "-r",
-                        FPS.to_string().as_str(),
-                        "-i",
-                        "-",
-                        "-c:v",
-                        "hevc_amf",
-                        "-pix_fmt",
-                        "yuv420p",
-                        "-an",
-                        "-b:v",
-                        "10M",
-                        "-movflags",
-                        "+faststart",
-                        "output.mp4",
-                    ])
-                    .stdin(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                    .context("Failed to start ffmpeg")?,
-            )
-        } else {
-            None
-        };
-
         Ok(Self {
-            instance,
             device,
             queue,
             //adapter,
-            texture,
-            texture_view,
-            out_buffer: output_buffer,
             data_buffer,
             render_pipeline,
-            ffmpeg,
             compute_pipeline,
             data_buffer_copy,
             compute_bind_group_layout,
             render_bind_group_layout,
+            surface,
         })
     }
     fn tick(&mut self) {
@@ -537,7 +390,11 @@ impl Game {
         self.device
             .poll(wgpu::MaintainBase::WaitForSubmissionIndex(ind));
     }
-    fn render(&mut self, _frame: usize) {
+    fn render(&mut self) -> anyhow::Result<()> {
+        let output = self.surface.get_current_texture()?;
+        let texture_view = output.texture.create_view(&wgpu::TextureViewDescriptor {
+            ..Default::default()
+        });
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -555,7 +412,7 @@ impl Game {
             let render_pass_desc = wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.texture_view,
+                    view: &texture_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -578,55 +435,9 @@ impl Game {
             render_pass.set_bind_group(0, &bind_group, &[]);
             render_pass.draw(0..3, 0..1);
         };
-        if self.ffmpeg.is_some() {
-            encoder.copy_texture_to_buffer(
-                wgpu::ImageCopyTextureBase {
-                    texture: &self.texture,
-                    mip_level: 0,
-                    origin: Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::ImageCopyBufferBase {
-                    buffer: &self.out_buffer,
-                    layout: wgpu::ImageDataLayout {
-                        offset: 0,
-                        bytes_per_row: Some(std::mem::size_of::<u32>() as u32 * WIDTH),
-                        rows_per_image: Some(HEIGHT),
-                    },
-                },
-                wgpu::Extent3d {
-                    width: WIDTH,
-                    height: HEIGHT,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
-        let id = self.queue.submit(Some(encoder.finish()));
-        self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(id));
-        if let Some(ref mut ffmpeg) = self.ffmpeg {
-            {
-                let buffer_slice = self.out_buffer.slice(..);
-
-                // NOTE: We have to create the mapping THEN device.poll() before await
-                // the future. Otherwise the application will freeze.
-                let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
-                buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-                    tx.send(result).unwrap();
-                });
-                self.device.poll(wgpu::Maintain::Wait);
-                smol::block_on(rx.receive()).unwrap().unwrap();
-
-                let data = buffer_slice.get_mapped_range();
-                use std::io::Write;
-                if let Some(i) = ffmpeg.stdin.as_mut() {
-                    i.write_all(&data).unwrap()
-                }
-                //use image::{ImageBuffer, Rgba};
-                //let buffer =
-                //ImageBuffer::<Rgba<u8>, _>::from_raw(WIDTH, HEIGHT, data).unwrap();
-                //buffer.save(format!("out/{}.png", frame)).unwrap();
-            }
-            self.out_buffer.unmap();
-        }
+        self.queue.submit(Some(encoder.finish()));
+        //self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(id));
+        output.present();
+        Ok(())
     }
 }

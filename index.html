@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ow my eyes</title>
+    <style>
+        body {
+            background-color: black;
+            color: white;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+        }
+        canvas {
+            background-color: black;
+            margin: 0;
+            padding: 0;
+        }
+        #readme {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            
+        }
+        a {
+            color: white;
+        }
+        a:visited {
+            color: #F0F0F0;
+        }
+        a:hover {
+            color: #F0F0F0;
+        }
+        .bold {
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body id="wasm">
+    <div id="readme">
+        <h1>ow my eyes</h1>
+        <p> Requires WebGPU to run. <a href="https://github.com/gpuweb/gpuweb/wiki/Implementation-Status"> See supported browsers </a> </p>
+        <p class="bold">EPILEPSY WARNING! BRIGHT COLORS WARNING! </p>
+        <button id="start" disabled>Start</button>
+        <p> May take a bit to load. Click the screen for fullscreen </p>
+    </div>
+    
+  <script type="module">
+      import init from "./pkg/ow_my_lib.js";
+      let start_button = document.getElementById("start");
+      if (!navigator.gpu?.wgslLanguageFeatures) {
+        start_button.innerText = "WebGPU not supported";
+        //return;
+      } else {
+        start_button.removeAttribute("disabled");
+        start_button.addEventListener("click", async () => {
+            document.getElementById("readme").remove();
+            await init();
+            // by this point, the canvas should exist
+            const canvas = document.querySelector("canvas");
+            canvas.addEventListener("click", () => {
+                canvas.requestFullscreen();
+            });
+      });
+      }
+      
+  </script>
+</body>
+
+</html>
+
+ 
+
+ 

@@ -1,0 +1,19 @@
+{
+  "name": "ow_my_eyes",
+  "version": "1.2.0",
+  "description": "ow, my eyes.",
+  "scripts": {
+    "wasm": "wasm-pack build --target web",
+    "wasm:dev": "wasm-pack build --target web --dev",
+    "web": "vite build",
+    "build": "pnpm wasm && pnpm web",
+    "dev": "pnpm wasm:dev && vite"
+  },
+  "keywords": [],
+  "author": "wackery",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "wasm-pack": "^0.12.1",
+    "vite": "^5.2.9"
+  }
+}

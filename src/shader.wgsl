@@ -25,7 +25,6 @@ fn vs_main(
     out.clip_position = vec4<f32>(x, y, 0.0, 1.0);
     return out;
 }
-const WGScale: u32 = 120; // 120*16 = 1920. 120*9 = 1080
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -50,7 +49,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 
-// no fucking idea how to write shaders lol.
 @group(0) @binding(0) var<storage, read_write> output: array<u32>;
 @group(0) @binding(1) var<storage, read> input: array<u32>;
 @compute @workgroup_size(16, 9, 1)
