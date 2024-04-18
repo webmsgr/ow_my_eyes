@@ -7,7 +7,6 @@ use game_loop::{game_loop, TimeTrait};
 use tracing::{error, info, instrument};
 use wgpu::{
     include_wgsl,
-    rwh::{HasDisplayHandle, HasWindowHandle},
     util::DeviceExt,
     Instance, Surface,
 };
@@ -85,24 +84,10 @@ async fn render_to_window() -> anyhow::Result<()> {
         ..Default::default()
     });
     info!("Creating surface");
-    // SAFETY:
-    // this handle lives for the lifetime of the window
-    // the window will outlive the surface
-    // because we put it in an arc and drop it after the game loop terminates (which drops the surface)
-    let surface = unsafe {
+    let surface = 
         instance
-            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: window
-                    .display_handle()
-                    .context("No display handle!")?
-                    .as_raw(),
-                raw_window_handle: window
-                    .window_handle()
-                    .context("No window handle!")?
-                    .as_raw(),
-            })
-            .context("Failed to create surface!")?
-    };
+            .create_surface(window.clone())
+            .context("Failed to create surface!")?;
     // let surface_caps = surface.get_capabilities(&game.adapter);
     info!("Creating game");
     let game = Game::new(surface, instance).await?;
