@@ -26,6 +26,7 @@ fn vs_main(
     return out;
 }
 
+@group(0) @binding(2) var<storage, read> colors: array<f32>;
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // this needs to read the right location in our buffer and display the pixel accordingly
@@ -34,17 +35,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let index = u32(x) + u32(y) * 1920;
 
     let pix = output[index];
-    var r = f32(0);
-    var g = f32(0);
-    var b = f32(0);
-
-    if pix == 0 {
-        r = 1.0;
-    } else if pix == 1 {
-        g = 1.0;
-    } else if pix == 2 {
-        b = 1.0;
-    }
+    let r = colors[pix*3+0];
+    let g = colors[pix*3+1];
+    let b = colors[pix*3+2];
     return vec4<f32>(r,g,b, 1.0);
 }
 

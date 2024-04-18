@@ -17,12 +17,26 @@ use winit::{
     window::Fullscreen,
 };
 
-fn create_initial_state() -> Vec<u8> {
+/// Create the color buffer with the set of colors
+fn colors(
+    rock: [f32; 3],
+    paper: [f32; 3],
+    scissors: [f32; 3]
+) -> [f32; 9] {
+    [
+        rock[0], rock[1], rock[2], // rock
+        paper[0], paper[1], paper[2], // paper
+        scissors[0], scissors[1], scissors[2] // scissors
+    ]
+}
+
+fn create_initial_state() -> Vec<u32> {
     let mut rng = rand::thread_rng();
     (0..WIDTH * HEIGHT)
-        .flat_map(|_| rng.gen_range(0..=2u32).to_ne_bytes())
+        .map(|_| rng.gen_range(0..=2u32))
         .collect()
 }
+
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
@@ -151,6 +165,7 @@ struct Game {
     compute_pipeline: wgpu::ComputePipeline,
     compute_bind_group_layout: wgpu::BindGroupLayout,
     render_bind_group_layout: wgpu::BindGroupLayout,
+    color_buffer: wgpu::Buffer,
     surface: wgpu::Surface<'static>,
 }
 
@@ -196,12 +211,26 @@ impl Game {
         };
         surface.configure(&device, &config);
 
+        info!("Creating color buffer");
+        let colors = colors(
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0]
+        );
+        let color_buffer_desc = wgpu::util::BufferInitDescriptor {
+            usage: wgpu::BufferUsages::STORAGE,
+            label: Some("Color Buffer"),
+            contents: bytemuck::cast_slice(&colors),
+        };
+        let color_buffer = device.create_buffer_init(&color_buffer_desc);
+
         info!("Creating data buffer");
+        let init_state = create_initial_state();
         //let data_buffer_size = (WIDTH * HEIGHT) as wgpu::BufferAddress;
         let data_buffer_desc = wgpu::util::BufferInitDescriptor {
             usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE,
             label: Some("Data Buffer"),
-            contents: &create_initial_state(),
+            contents: &bytemuck::cast_slice(&init_state),
         };
         let data_buffer = device.create_buffer_init(&data_buffer_desc);
         // create data buffer copy
@@ -221,8 +250,6 @@ impl Game {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: None,
                 entries: &[
-                    // XXX - some graphics cards do not support empty bind layout groups, so
-                    // create a dummy entry.
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         count: None,
@@ -231,6 +258,16 @@ impl Game {
                             has_dynamic_offset: false,
                             min_binding_size: Some(NonZeroU64::new(16).unwrap()),
                             ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        },
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        count: None,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
                         },
                     },
                 ],
@@ -286,8 +323,6 @@ impl Game {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: None,
                 entries: &[
-                    // XXX - some graphics cards do not support empty bind layout groups, so
-                    // create a dummy entry.
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         count: None,
@@ -333,6 +368,7 @@ impl Game {
             compute_bind_group_layout,
             render_bind_group_layout,
             surface,
+            color_buffer
         })
     }
     fn tick(&mut self) {
@@ -362,7 +398,6 @@ impl Game {
                 },
             ],
         });
-
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Compute"),
@@ -393,6 +428,10 @@ impl Game {
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: self.data_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: self.color_buffer.as_entire_binding(),
             }],
         });
         {
