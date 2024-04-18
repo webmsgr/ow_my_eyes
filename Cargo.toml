@@ -33,10 +33,13 @@ web-sys = { version = "0.3", features = [
 ]}
 getrandom = { version = "0.2.13", features = ["js"] }
 
+[profile.dev]
+opt-level = 1
 
 [lib]
 crate-type = ["rlib", "cdylib"]
 name = "ow_my_lib"
+
 
 [[bin]]
 name = "ow_my_eyes"
