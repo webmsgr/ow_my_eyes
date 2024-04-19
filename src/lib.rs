@@ -13,22 +13,8 @@ use wgpu::{
     Instance, Surface,
 };
 use winit::{
-    event::{Event, WindowEvent},
-    window::Fullscreen,
+    event::{Event, WindowEvent}, keyboard::NamedKey, window::Fullscreen
 };
-
-/// Create the color buffer with the set of colors
-fn colors(
-    rock: [f32; 3],
-    paper: [f32; 3],
-    scissors: [f32; 3]
-) -> [f32; 9] {
-    [
-        rock[0], rock[1], rock[2], // rock
-        paper[0], paper[1], paper[2], // paper
-        scissors[0], scissors[1], scissors[2] // scissors
-    ]
-}
 
 fn create_initial_state() -> Vec<u32> {
     let mut rng = rand::thread_rng();
@@ -40,13 +26,14 @@ fn create_initial_state() -> Vec<u32> {
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, Layer};
+
 //const FPS: usize = 60;
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
 pub async fn run() {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, Layer};
         let stupid_amd_filter = filter::filter_fn(|meta| {
             // see https://github.com/gfx-rs/wgpu/issues/4247
             // basically, amd does some weird stuff on vulkan that causes error spam
@@ -144,6 +131,24 @@ async fn render_to_window() -> anyhow::Result<()> {
             {
                 h.exit();
             }
+            if let Event::WindowEvent { event: WindowEvent::KeyboardInput { event, .. }, .. } = e {
+                if event.state.is_pressed() {
+                    if event.logical_key == "p" {
+                        h.game.color_manager.toggle_blender();
+                    } else if cfg!(not(target_arch = "wasm32")) && event.logical_key == NamedKey::Escape {
+                        h.exit();
+                    } else if event.logical_key == NamedKey::ArrowRight {
+                        h.game.color_manager.next();
+                    } else if event.logical_key == NamedKey::ArrowLeft {
+                        h.game.color_manager.prev();
+                    } else if event.logical_key == "r" {
+                        h.game.queue
+                            .write_buffer(&h.game.data_buffer, 0, 
+                            bytemuck::cast_slice(&create_initial_state()));
+                    }
+                }
+                
+            }
         },
     )
     .context("Game loop failed")?;
@@ -165,6 +170,7 @@ struct Game {
     compute_pipeline: wgpu::ComputePipeline,
     compute_bind_group_layout: wgpu::BindGroupLayout,
     render_bind_group_layout: wgpu::BindGroupLayout,
+    color_manager: ColorModes,
     color_buffer: wgpu::Buffer,
     surface: wgpu::Surface<'static>,
 }
@@ -193,12 +199,11 @@ impl Game {
             .await
             .context("No device found!")?;
         let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps
+        let surface_format = *surface_caps
             .formats
             .iter()
             .find(|f| f.is_srgb())
-            .unwrap_or(&surface_caps.formats[0])
-            .clone();
+            .unwrap_or(&surface_caps.formats[0]);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
@@ -212,13 +217,10 @@ impl Game {
         surface.configure(&device, &config);
 
         info!("Creating color buffer");
-        let colors = colors(
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0]
-        );
+        let color_manager = ColorModes::new();
+        let colors = color_manager.colors();
         let color_buffer_desc = wgpu::util::BufferInitDescriptor {
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             label: Some("Color Buffer"),
             contents: bytemuck::cast_slice(&colors),
         };
@@ -228,9 +230,9 @@ impl Game {
         let init_state = create_initial_state();
         //let data_buffer_size = (WIDTH * HEIGHT) as wgpu::BufferAddress;
         let data_buffer_desc = wgpu::util::BufferInitDescriptor {
-            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             label: Some("Data Buffer"),
-            contents: &bytemuck::cast_slice(&init_state),
+            contents: bytemuck::cast_slice(&init_state),
         };
         let data_buffer = device.create_buffer_init(&data_buffer_desc);
         // create data buffer copy
@@ -368,7 +370,8 @@ impl Game {
             compute_bind_group_layout,
             render_bind_group_layout,
             surface,
-            color_buffer
+            color_manager,
+            color_buffer,
         })
     }
     fn tick(&mut self) {
@@ -409,6 +412,7 @@ impl Game {
         }
 
         let ind = self.queue.submit(Some(encoder.finish()));
+        self.color_manager.tick();
         self.device
             .poll(wgpu::MaintainBase::WaitForSubmissionIndex(ind));
     }
@@ -461,9 +465,293 @@ impl Game {
             render_pass.set_bind_group(0, &bind_group, &[]);
             render_pass.draw(0..3, 0..1);
         };
+        self.color_manager.push_to_gpu(&mut self.queue, &self.color_buffer);
         self.queue.submit(Some(encoder.finish()));
         //self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(id));
         output.present();
         Ok(())
+    }
+}
+
+
+
+
+struct ColorModes {
+    mode: usize,
+    colors: Box<[[Color; 3]]>,
+    blender: ColorBlender,
+    blender_enabled: bool,
+    should_push: bool,
+}
+
+impl ColorModes {
+    fn new() -> Self {
+        Self {
+            mode: 0,
+            blender: ColorBlender::new(0.01),
+            colors: vec![
+                [ // standard RGB
+                    [1.0, 0.0, 0.0].into(),
+                    [0.0, 1.0, 0.0].into(),
+                    [0.0, 0.0, 1.0].into(),
+                ],
+                [ // CMY
+                    [0.0, 1.0, 1.0].into(),
+                    [1.0, 0.0, 1.0].into(),
+                    [1.0, 1.0, 0.0].into(),
+                ],
+                [ // darker rgb
+                    [0.8, 0.0, 0.0].into(),
+                    [0.0, 0.8, 0.0].into(),
+                    [0.0, 0.0, 0.8].into(),
+                ],
+                [ // grayscale
+                    [0.0, 0.0, 0.0].into(),
+                    [0.5, 0.5, 0.5].into(),
+                    [1.0, 1.0, 1.0].into(),
+                ]
+            ].into_boxed_slice(),
+            blender_enabled: false,
+            should_push: true
+        }
+    }
+    fn tick(&mut self) {
+        if self.blender_enabled {
+            self.blender.step();
+        } else {
+            self.blender.reset(self.r_color(), self.p_color(), self.s_color());
+            self.should_push = true;
+        }
+    }
+    #[inline]
+    fn r_color(&self) -> Color {
+        self.colors[self.mode][0]
+    }
+    #[inline]
+    fn p_color(&self) -> Color {
+        self.colors[self.mode][1]
+    }
+    #[inline]
+    fn s_color(&self) -> Color {
+        self.colors[self.mode][2]
+    }
+    fn colors(&self) -> [f32; 9] {
+        if self.blender_enabled {
+            self.blender.colors()
+        } else {
+            let colors = &self.colors[self.mode];
+            let rc = colors[0].color();
+            let pc = colors[1].color();
+            let sc = colors[2].color();
+            [
+                rc[0], rc[1], rc[2],
+                pc[0], pc[1], pc[2],
+                sc[0], sc[1], sc[2],
+            ]
+        }
+    }
+    fn push_to_gpu(&mut self, q: &mut wgpu::Queue, buffer: &wgpu::Buffer) {
+        if self.blender_enabled { 
+            self.blender.push_to_gpu(q, buffer);
+        } else if self.should_push {
+            self.should_push = false; // we should only push once per change
+            // this probably doesn't save any meaningful amount of time but i really dont care
+            q.write_buffer(buffer, 0, bytemuck::cast_slice(&self.colors()));
+        }
+    }
+
+    fn next(&mut self) {
+        self.mode = (self.mode + 1) % self.colors.len();
+        self.should_push = true;
+    }
+    fn prev(&mut self) {
+        self.mode = (self.mode + self.colors.len() - 1) % self.colors.len();
+        self.should_push = true;
+    }
+    fn toggle_blender(&mut self) {
+        self.blender_enabled = !self.blender_enabled;
+    }
+    
+}
+
+
+struct ColorBlender {
+    rock: Color,
+    paper: Color,
+    scissors: Color,
+    rock_target: Color,
+    paper_target: Color,
+    scissors_target: Color,
+    dirty: bool,
+    has_done_step: bool,
+    pub blend_amt: f64,
+}
+
+impl ColorBlender {
+    fn new(blend_amt: f64) -> Self {
+        Self {
+            rock:     [1.0, 0.0, 0.0].into(),
+            paper:    [0.0, 1.0, 0.0].into(),
+            scissors: [0.0, 0.0, 1.0].into(),
+            dirty: false,
+            has_done_step: false,
+            rock_target: [1.0, 0.0, 0.0].into(),
+            paper_target: [0.0, 1.0, 0.0].into(),
+            scissors_target: [0.0, 0.0, 1.0].into(),
+            blend_amt
+        }
+    }
+    #[rustfmt::skip]
+    fn colors(&self) -> [f32; 9] {
+        let r=  self.rock.color();
+        let p = self.paper.color();
+        let s = self.scissors.color();
+        [
+            r[0], r[1], r[2],
+            p[0], p[1], p[2],
+            s[0], s[1], s[2],
+        ]
+    }
+    fn reset(&mut self, to_r: Color, to_p: Color, to_s: Color) {
+        self.rock = to_r;
+        self.paper = to_p;
+        self.scissors = to_s;
+        self.rock_target = to_r;
+        self.paper_target = to_p;
+        self.scissors_target = to_s;
+        if self.has_done_step {
+            self.has_done_step = false;
+            self.dirty = true;
+        }
+    }
+    fn step(&mut self) {
+        self.has_done_step = true;
+        // if we've hit a target on any 3, reset to new random target
+        if (self.rock - self.rock_target).abs().sum() < self.blend_amt {
+            self.rock_target = self.rock_target.rand_within(0.5)
+        }
+        if (self.paper - self.paper_target).abs().sum() < self.blend_amt {
+            self.paper_target = self.paper_target.rand_within(0.5)
+        }
+        if (self.scissors - self.scissors_target).abs().sum() < self.blend_amt {
+            self.scissors_target = self.scissors_target.rand_within(0.5)
+        }
+        // blend towards target`
+        self.rock.blend_to_target(&self.rock_target, self.blend_amt);
+        self.paper.blend_to_target(&self.paper_target, self.blend_amt);
+        self.scissors.blend_to_target(&self.scissors_target, self.blend_amt);
+        self.dirty = true;
+    }
+    fn push_to_gpu(&self, q: &mut wgpu::Queue, buffer: &wgpu::Buffer) {
+        if self.dirty {
+            let colors = self.colors();
+            q.write_buffer(buffer, 0, bytemuck::cast_slice(&colors));
+        }
+    }
+}
+
+
+// COLOR MATH AAAAAAAA
+#[derive(Debug, Clone, Copy)]
+struct Color {
+    r: f64,
+    g: f64,
+    b: f64,
+}
+
+impl Color {
+    fn new(r: f64, g: f64, b: f64) -> Self {
+        Self { r, g, b }
+    }
+    fn color(&self) -> [f32; 3] {
+        [
+            self.r as f32, 
+            self.g as f32, 
+            self.b as f32
+        ]
+    }
+    fn abs(self) -> Self {
+        Self {
+            r: self.r.abs(),
+            g: self.g.abs(),
+            b: self.b.abs(),
+        }
+    }
+    /*fn rand() -> Self {
+        let rng = &mut rand::thread_rng();
+        Self {
+            r: rng.gen_range(0.0..=1.0f64),
+            g: rng.gen_range(0.0..=1.0f64), 
+            b: rng.gen_range(0.0..=1.0f64),
+        }
+    
+    }*/
+    fn rand_within(&self, amt: f64) -> Self {
+        let r_min = (self.r - amt).min(1.0).max(0.0);
+        let r_max = (self.r + amt).min(1.0).max(0.0);
+        let g_min = (self.g - amt).min(1.0).max(0.0);
+        let g_max = (self.g + amt).min(1.0).max(0.0);
+        let b_min = (self.b - amt).min(1.0).max(0.0);
+        let b_max = (self.b + amt).min(1.0).max(0.0);
+        let rng = &mut rand::thread_rng();
+        Self {
+            r: rng.gen_range(r_min..=r_max),
+            g: rng.gen_range(g_min..=g_max),
+            b: rng.gen_range(b_min..=b_max),
+        }
+    }
+    fn sum(self) -> f64 {
+        self.r + self.g + self.b
+    }
+    fn blend_to_target(&mut self, target: &Self, amt: f64) {
+        // sub/add by amt for self to get closer (unless we're < amt away)
+        let diff_r = target.r - self.r;
+        let diff_g = target.g - self.g;
+        let diff_b = target.b - self.b;
+        if diff_r.abs() < amt {
+            self.r = target.r;
+        } else {
+            self.r += diff_r.signum() * amt;
+        }
+        if diff_g.abs() < amt {
+            self.g = target.g;
+        } else {
+            self.g += diff_g.signum() * amt;
+        }
+        if diff_b.abs() < amt {
+            self.b = target.b;
+        } else {
+            self.b += diff_b.signum() * amt;
+        }
+    }
+}
+
+impl From<[f64; 3]> for Color {
+    fn from(arr: [f64; 3]) -> Self {
+        Self {
+            r: arr[0],
+            g: arr[1],
+            b: arr[2],
+        }
+    }
+}
+
+impl std::ops::Sub for Color {
+    type Output = Color;
+    fn sub(self, rhs: Self) -> Self::Output {
+        Color::new(self.r - rhs.r, self.g - rhs.g, self.b - rhs.b)
+    }
+}
+impl std::ops::Sub<&Color> for Color {
+    type Output = Color;
+    fn sub(self, rhs: &Self) -> Self::Output {
+        Color::new(self.r - rhs.r, self.g - rhs.g, self.b - rhs.b)
+    }
+}
+
+impl std::ops::Sub<&Color> for &Color {
+    type Output = Color;
+    fn sub(self, rhs: &Color) -> Self::Output {
+        Color::new(self.r - rhs.r, self.g - rhs.g, self.b - rhs.b)
     }
 }

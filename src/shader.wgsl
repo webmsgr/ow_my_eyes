@@ -35,6 +35,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let index = u32(x) + u32(y) * 1920;
 
     let pix = output[index];
+    // i tried to pass in a array<array<f32, 3>> but that didn't work
+    // so i have to do this cursed thing
+    // flat buffers are cooler anyway
     let r = colors[pix*3+0];
     let g = colors[pix*3+1];
     let b = colors[pix*3+2];

@@ -21,11 +21,10 @@
             padding: 0;
         }
         #readme {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
             text-align: center;
+            margin: auto;
+            width: fit-content;
+            
             
         }
         a {
@@ -40,6 +39,13 @@
         .bold {
             font-weight: bold;
         }
+        ul {
+            list-style-type: none;
+            margin: auto;
+            width: fit-content;
+            margin: 0;
+            padding: 0;
+        }
     </style>
 </head>
 
@@ -49,7 +55,14 @@
         <p> Requires WebGPU to run. <a href="https://github.com/gpuweb/gpuweb/wiki/Implementation-Status"> See supported browsers </a> </p>
         <p class="bold">EPILEPSY WARNING! BRIGHT COLORS WARNING! </p>
         <button id="start" disabled>Start</button>
-        <p> May take a bit to load. Click the screen for fullscreen </p>
+        <p> May take a bit to load.</p>
+        <p> Controls </p>
+        <ul>
+            <li> Click to fullscreen </li>
+            <li> Left/Right Arrow Keys to switch color mode </li>
+            <li> P to enable "Psychedelic Mode" (Will hurt your eyes)</li>
+            <li> R to reset </li>
+        </ul>
     </div>
     
   <script type="module">
